@@ -8,3 +8,5 @@ rich
 markdown-it-py
 mdurl
 pygments
+google-generativeai
+
