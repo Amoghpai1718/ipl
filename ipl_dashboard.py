@@ -6,32 +6,40 @@ import plotly.graph_objects as go
 import openai
 
 # =======================
-# 1. Page Configuration
+# 1. PAGE CONFIG
 # =======================
 st.set_page_config(page_title="IPL Deep Dive Dashboard", layout="wide")
 
-# =======================
-# 2. CSS (Dark Theme)
-# =======================
 st.markdown("""
     <style>
         body {background-color: #0E1117; color: #FAFAFA;}
         .stApp {background-color: #0E1117;}
         h1, h2, h3, h4 {color: #FF6F00;}
         .stMetric {background-color: #1E1E1E; border-radius: 10px;}
-        .css-1v0mbdj {color: white;}
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🏏 IPL Match Predictor & Deep Dive Dashboard")
 
 # =======================
-# 3. Load Data & Models
+# 2. LOAD DATA & MODELS
 # =======================
 @st.cache_data
 def load_data():
     matches = pd.read_csv("all_matches.csv")
     deliveries = pd.read_csv("all_deliveries.csv")
+    
+    # Normalize match ID column
+    match_id_col = None
+    for col in ["id", "match_id", "matchid"]:
+        if col in matches.columns:
+            match_id_col = col
+            break
+    if match_id_col is None:
+        st.error("No match ID column found in all_matches.csv.")
+        st.stop()
+
+    matches.rename(columns={match_id_col: "match_id"}, inplace=True)
     return matches, deliveries
 
 @st.cache_resource
@@ -53,12 +61,12 @@ if model is None:
     st.stop()
 
 # =======================
-# 4. Prediction Function
+# 3. PREDICT FUNCTION
 # =======================
 def predict_match_winner(model, team_encoder, venue_encoder, toss_encoder,
                          team1, team2, venue, toss_winner,
                          team1_form, team2_form, team1_win_pct, team2_win_pct):
-    """Returns winner and win probabilities (8 features)."""
+    """Returns predicted winner and win probabilities (8 features)."""
     team1_enc = team_encoder.transform([team1])[0]
     team2_enc = team_encoder.transform([team2])[0]
     venue_enc = venue_encoder.transform([venue])[0]
@@ -77,13 +85,12 @@ def predict_match_winner(model, team_encoder, venue_encoder, toss_encoder,
 
     pred = model.predict(input_df)[0]
     proba = model.predict_proba(input_df)[0]
-
     winner = team1 if pred == 1 else team2
-    win_probs = {team1: proba[1]*100, team2: proba[0]*100}
+    win_probs = {team1: proba[1] * 100, team2: proba[0] * 100}
     return winner, win_probs
 
 # =======================
-# 5. Sidebar Inputs
+# 4. SIDEBAR INPUTS
 # =======================
 st.sidebar.header("Select Match Parameters")
 
@@ -98,9 +105,10 @@ team1_form = st.sidebar.slider(f"{team1} Form (0-1)", 0.0, 1.0, 0.5)
 team2_form = st.sidebar.slider(f"{team2} Form (0-1)", 0.0, 1.0, 0.5)
 
 # =======================
-# 6. Live Prediction
+# 5. LIVE PREDICTION + VISUALS
 # =======================
 try:
+    # --- H2H Stats ---
     h2h = matches[
         ((matches["team1"] == team1) & (matches["team2"] == team2)) |
         ((matches["team1"] == team2) & (matches["team2"] == team1))
@@ -111,34 +119,36 @@ try:
     team1_win_pct = team1_wins / total if total > 0 else 0.5
     team2_win_pct = team2_wins / total if total > 0 else 0.5
 
+    # --- Prediction ---
     winner, win_probs = predict_match_winner(
         model, team_encoder, venue_encoder, toss_encoder,
         team1, team2, venue, toss_winner,
         team1_form, team2_form, team1_win_pct, team2_win_pct
     )
 
-    # --- Animated Plotly Pie Chart ---
     st.subheader(f"🏆 Predicted Winner: {winner}")
-    fig = go.Figure(
-        data=[go.Pie(
+
+    # --- Animated Pie Chart (Plotly) ---
+    fig = go.Figure(data=[
+        go.Pie(
             labels=[team1, team2],
             values=[win_probs[team1], win_probs[team2]],
             textinfo="label+percent",
             marker=dict(colors=["#FF6F00", "#1E90FF"]),
             hole=0.4
-        )]
-    )
+        )
+    ])
     fig.update_traces(sort=False)
     st.plotly_chart(fig, use_container_width=True)
 
     # --- H2H Summary ---
     st.markdown("### 📊 Head-to-Head Summary")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Matches", total)
-    col2.metric(f"{team1} Wins", team1_wins)
-    col3.metric(f"{team2} Wins", team2_wins)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Matches", total)
+    c2.metric(f"{team1} Wins", team1_wins)
+    c3.metric(f"{team2} Wins", team2_wins)
 
-    # --- Venue Stats ---
+    # --- Venue Averages ---
     st.markdown("---")
     st.subheader(f"🏟️ Team Averages at {venue}")
 
@@ -149,8 +159,10 @@ try:
         ]
         if relevant_matches.empty:
             return 0, 0
-        match_ids = relevant_matches["id"].unique()
+        match_ids = relevant_matches["match_id"].unique()
         innings = deliveries[deliveries["match_id"].isin(match_ids) & (deliveries["batting_team"] == team)]
+        if innings.empty:
+            return 0, 0
         avg_runs = innings.groupby("match_id")["total_runs"].sum().mean()
         avg_wkts = innings.groupby("match_id")["is_wicket"].sum().mean()
         return round(avg_runs, 1), round(avg_wkts, 1)
@@ -158,11 +170,11 @@ try:
     t1_runs, t1_wkts = get_avg_stats(team1)
     t2_runs, t2_wkts = get_avg_stats(team2)
 
-    c1, c2 = st.columns(2)
-    c1.metric(f"{team1} Avg Score", f"{t1_runs} / {t1_wkts}")
-    c2.metric(f"{team2} Avg Score", f"{t2_runs} / {t2_wkts}")
+    c4, c5 = st.columns(2)
+    c4.metric(f"{team1} Avg Score", f"{t1_runs} / {t1_wkts}")
+    c5.metric(f"{team2} Avg Score", f"{t2_runs} / {t2_wkts}")
 
-    # --- Key Players ---
+    # --- Key Players (Against Opponent) ---
     st.markdown("---")
     st.subheader("🔥 Key Player Stats (Against Opponent)")
 
@@ -189,25 +201,27 @@ except Exception as e:
     st.error(f"Error in prediction: {e}")
 
 # =======================
-# 7. AI Chatbot Tab
+# 6. SIMPLE AI CHATBOT (Google Gemini)
 # =======================
+import google.generativeai as genai
+
 st.markdown("---")
-st.header("🤖 Ask IPL Insights (AI Chatbot)")
-user_query = st.text_input("Ask about IPL teams, players, or venues:")
+st.header("🤖 IPL Insights Chatbot (Gemini)")
+
+# Configure Gemini API
+try:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+except Exception as e:
+    st.error(f"Google API configuration error: {e}")
+
+user_query = st.text_input("Ask about IPL teams, venues, or players:")
 
 if user_query:
     try:
-        # Replace with your API key for Streamlit Cloud
-        openai.api_key = st.secrets["OPENAI_API_KEY"]
-        response = openai.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": "You are an IPL analyst assistant."},
-                {"role": "user", "content": user_query}
-            ],
-            max_tokens=150
+        model_gemini = genai.GenerativeModel("gemini-1.5-flash")
+        response = model_gemini.generate_content(
+            f"You are an IPL cricket analyst. Answer concisely and factually.\n\nUser question: {user_query}"
         )
-        answer = response.choices[0].message.content
-        st.success(answer)
+        st.success(response.text)
     except Exception as e:
-        st.error(f"Chatbot Error: {e}")
+        st.error(f"Chatbot error: {e}")
