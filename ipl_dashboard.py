@@ -10,14 +10,14 @@ import logging
 # -------------------------------
 # 1. APP CONFIG
 # -------------------------------
-st.set_page_config(page_title="IPL AI Dashboard", layout="wide")
+st.set_page_config(page_title="IPL AI Assistant", layout="wide")
 st.markdown("""
-<style>
-body { background-color: #0E1117; color: white; }
-.stButton>button { background-color: #FF6F00; color: white; }
-.stSelectbox, .stSlider { color: black; }
-</style>
-""", unsafe_allow_html=True)
+    <style>
+    body { background-color: #0E1117; color: white; }
+    .stButton>button { background-color: #FF6F00; color: white; }
+    .stSelectbox, .stSlider { color: black; }
+    </style>
+    """, unsafe_allow_html=True)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -83,15 +83,15 @@ with tab1:
             st.error("Team 1 and Team 2 cannot be the same.")
         else:
             try:
-                # Head-to-Head Win %
+                # Head-to-Head stats
                 h2h = matches[
                     ((matches["team1"] == team1) & (matches["team2"] == team2)) |
                     ((matches["team1"] == team2) & (matches["team2"] == team1))
                 ]
-                team1_win_pct = (h2h["winner"] == team1).sum() / max(len(h2h),1)
-                team2_win_pct = (h2h["winner"] == team2).sum() / max(len(h2h),1)
+                team1_win_pct = ((h2h["winner"] == team1).sum()) / max(len(h2h),1)
+                team2_win_pct = ((h2h["winner"] == team2).sum()) / max(len(h2h),1)
 
-                # Predict Winner
+                # Predict Winner (dynamic with form sliders)
                 prediction, win_probs = predict_match_winner(
                     model, team_encoder, venue_encoder, toss_encoder,
                     team1, team2, venue, toss_winner,
@@ -113,23 +113,23 @@ with tab1:
                 st.write(f"{team1} Wins: {(h2h['winner']==team1).sum()}")
                 st.write(f"{team2} Wins: {(h2h['winner']==team2).sum()}")
 
-                # Top Batters & Bowlers (filtered for selected teams)
-                st.subheader("🔥 Key Player Stats")
-                
-                team_deliveries = deliveries[
-                    (deliveries["inning_team"].isin([team1, team2]))
+                # Filter deliveries for selected teams only
+                team1_vs_team2 = deliveries[
+                    ((deliveries["inning_team"] == team1) & (deliveries["bowler"].isin(deliveries[deliveries["inning_team"]==team2]["bowler"]))) |
+                    ((deliveries["inning_team"] == team2) & (deliveries["bowler"].isin(deliveries[deliveries["inning_team"]==team1]["bowler"])))
                 ]
+
+                st.subheader("🔥 Top Batters & Bowlers vs Selected Opponent")
                 
-                top_batters = team_deliveries.groupby("batter")["runs_scored"].sum().sort_values(ascending=False).head(5)
-                top_bowlers = team_deliveries[team_deliveries["is_wicket"]==1].groupby("bowler")["is_wicket"].sum().sort_values(ascending=False).head(5)
+                # Top Batters
+                top_batters = team1_vs_team2.groupby("batter")["runs_scored"].sum().sort_values(ascending=False).head(5)
+                st.write("Top Batters")
+                st.bar_chart(top_batters)
                 
-                col_b1, col_b2 = st.columns(2)
-                with col_b1:
-                    st.write("Top 5 Batters")
-                    st.bar_chart(top_batters)
-                with col_b2:
-                    st.write("Top 5 Bowlers")
-                    st.bar_chart(top_bowlers)
+                # Top Bowlers
+                top_bowlers = team1_vs_team2[team1_vs_team2["is_wicket"]==1].groupby("bowler")["is_wicket"].sum().sort_values(ascending=False).head(5)
+                st.write("Top Bowlers")
+                st.bar_chart(top_bowlers)
 
             except Exception as e:
                 st.error(f"Error in prediction: {e}")
@@ -158,7 +158,6 @@ with tab2:
         user_query = st.text_input("Ask anything about IPL...", key="chat_input")
         if st.button("Send", key="send_button") and user_query:
             try:
-                # Call Google Custom Search API
                 search_url = f"https://www.googleapis.com/customsearch/v1?q={user_query}&cx={GOOGLE_CX}&key={GOOGLE_API_KEY}&num=3"
                 response = requests.get(search_url).json()
                 
