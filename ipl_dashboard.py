@@ -4,14 +4,16 @@ import numpy as np
 import joblib
 import logging
 import plotly.express as px
+from predict_winner import predict_match_winner
 
-# ------------------ Logging ------------------
+# Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ------------------ App Config ------------------
-st.set_page_config(page_title="IPL Advanced Dashboard", layout="wide")
+# ------------------ PAGE CONFIG ------------------
+st.set_page_config(page_title="IPL AI Dashboard", layout="wide")
+st.title("🏏 IPL Advanced Analytics & Winner Predictor")
 
-# ------------------ Load Model & Encoders ------------------
+# ------------------ LOAD MODEL & ENCODERS ------------------
 @st.cache_resource
 def load_model_files():
     try:
@@ -19,63 +21,50 @@ def load_model_files():
         team_encoder = joblib.load("team_encoder.pkl")
         toss_encoder = joblib.load("toss_encoder.pkl")
         venue_encoder = joblib.load("venue_encoder.pkl")
-        logging.info("Model and encoders loaded successfully.")
-        return model, team_encoder, toss_encoder, venue_encoder
+        winner_encoder = joblib.load("winner_encoder.pkl")
+        logging.info("All model and encoder files loaded successfully.")
+        return model, team_encoder, toss_encoder, venue_encoder, winner_encoder
     except Exception as e:
-        st.error(f"Error loading model/encoders: {e}")
-        return None, None, None, None
+        st.error(f"Error loading model files: {e}")
+        return None, None, None, None, None
 
-model, team_encoder, toss_encoder, venue_encoder = load_model_files()
+model, team_encoder, toss_encoder, venue_encoder, winner_encoder = load_model_files()
 
-# ------------------ Load CSVs ------------------
+# ------------------ LOAD MATCH DATA ------------------
 @st.cache_data
 def load_matches():
     try:
-        df = pd.read_csv("all_matches.csv")
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        return df
+        matches = pd.read_csv("all_matches.csv")
+        deliveries = pd.read_csv("all_deliveries.csv")
+        return matches, deliveries
     except Exception as e:
-        st.error(f"Error loading all_matches.csv: {e}")
-        return pd.DataFrame()
+        st.error(f"Error loading CSV files: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
-matches = load_matches()
+matches, deliveries = load_matches()
 
-@st.cache_data
-def load_deliveries():
-    try:
-        df = pd.read_csv("all_deliveries.csv")
-        return df
-    except Exception as e:
-        st.error(f"Error loading all_deliveries.csv: {e}")
-        return pd.DataFrame()
+# ------------------ TABS ------------------
+tab1, tab2, tab3 = st.tabs(["🏆 Predict Winner", "📊 Top Players Stats", "🤖 IPL Chatbot"])
 
-deliveries = load_deliveries()
+# ------------------ TAB 1: PREDICT WINNER ------------------
+with tab1:
+    st.header("Predict Match Winner")
 
-# ------------------ Tabs ------------------
-st.title("🏏 IPL Advanced Dashboard & Winner Predictor")
-
-if model is None or matches.empty:
-    st.error("Essential files missing. Cannot run the app.")
-else:
-    tab1, tab2, tab3 = st.tabs(["🏆 Predict Match Winner", "📊 Player Stats", "🤖 IPL Chatbot"])
-
-    # ------------------ TAB 1: Winner Prediction ------------------
-    with tab1:
-        st.header("Predict Match Winner")
+    if model is None:
+        st.error("Model or encoders not loaded. Cannot predict.")
+    else:
         all_teams = sorted(list(team_encoder.classes_))
         all_venues = sorted(list(venue_encoder.classes_))
-        all_toss = sorted(list(toss_encoder.classes_))
+        all_toss_decisions = sorted(list(toss_encoder.classes_))
 
         col1, col2 = st.columns(2)
         with col1:
-            team1 = st.selectbox("Select Team 1", all_teams, key="team1")
-            team2 = st.selectbox("Select Team 2", all_teams, key="team2")
-            team1_form = st.slider(f"{team1} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team1_form")
+            team1 = st.selectbox("Select Team 1", all_teams, index=0)
+            team2 = st.selectbox("Select Team 2", all_teams, index=1)
         with col2:
-            venue = st.selectbox("Select Venue", all_venues, key="venue")
-            toss_winner = st.selectbox("Toss Winner", [team1, team2], key="toss_winner")
-            toss_decision = st.selectbox("Toss Decision", all_toss, key="toss_decision")
-            team2_form = st.slider(f"{team2} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team2_form")
+            venue = st.selectbox("Select Venue", all_venues)
+            toss_winner = st.selectbox("Toss Winner", [team1, team2])
+            toss_decision = st.selectbox("Toss Decision", all_toss_decisions)
 
         if st.button("Predict Winner"):
             if team1 == team2:
@@ -85,88 +74,77 @@ else:
                     team1_enc = team_encoder.transform([team1])[0]
                     team2_enc = team_encoder.transform([team2])[0]
                     venue_enc = venue_encoder.transform([venue])[0]
-                    toss_enc = toss_encoder.transform([toss_winner])[0]
+                    toss_enc = toss_encoder.transform([toss_decision])[0]
+                    toss_winner_enc = team_encoder.transform([toss_winner])[0]
 
-                    # Example: Using 8 features in correct order
-                    input_df = pd.DataFrame({
+                    team1_form = 0.5
+                    team2_form = 0.5
+
+                    features = pd.DataFrame({
                         'team1_enc':[team1_enc],
                         'team2_enc':[team2_enc],
                         'venue_enc':[venue_enc],
                         'toss_enc':[toss_enc],
+                        'toss_winner_enc':[toss_winner_enc],
                         'team1_form':[team1_form],
-                        'team2_form':[team2_form],
-                        'team1_win_pct':[0.5],  # default; can enhance later
-                        'team2_win_pct':[0.5]   # default
+                        'team2_form':[team2_form]
                     })
 
-                    pred = model.predict(input_df)[0]
-                    prob = model.predict_proba(input_df)[0]
+                    pred, prob = predict_match_winner(model, features, team1, team2)
+                    st.success(f"🏆 Predicted Winner: **{pred}**")
+                    st.write(f"Winning Probability - {team1}: {prob[0]*100:.1f}%, {team2}: {prob[1]*100:.1f}%")
 
-                    winner = team1 if pred==1 else team2
-                    st.success(f"🏆 Predicted Winner: {winner}")
-                    st.write(f"Confidence {team1}: {prob[1]*100:.1f}%")
-                    st.write(f"Confidence {team2}: {prob[0]*100:.1f}%")
-
-                    # Head-to-Head
-                    st.subheader(f"📊 Head-to-Head: {team1} vs {team2}")
-                    h2h = matches[((matches['team1']==team1)&(matches['team2']==team2))|
-                                  ((matches['team1']==team2)&(matches['team2']==team1))]
+                    # Head-to-head stats
+                    st.subheader("📊 Head-to-Head Stats")
+                    h2h = matches[((matches["team1"]==team1) & (matches["team2"]==team2)) |
+                                  ((matches["team1"]==team2) & (matches["team2"]==team1))]
                     if h2h.empty:
-                        st.write("No historical matches.")
+                        st.write("No H2H data available.")
                     else:
                         total = len(h2h)
-                        wins = h2h['winner'].value_counts()
-                        st.metric("Total Matches", total)
-                        st.metric(f"{team1} Wins", wins.get(team1,0))
-                        st.metric(f"{team2} Wins", wins.get(team2,0))
+                        wins = h2h["winner"].value_counts()
+                        st.write(f"Total Matches: {total}")
+                        st.write(f"{team1} Wins: {wins.get(team1,0)}")
+                        st.write(f"{team2} Wins: {wins.get(team2,0)}")
                         st.bar_chart(wins)
 
-    # ------------------ TAB 2: Top Players ------------------
-    with tab2:
-        st.header("📊 Top Batters & Bowlers")
-        if deliveries.empty:
-            st.warning("No deliveries data.")
-        else:
-            team_filter = st.selectbox("Select Team for Stats", sorted(deliveries['inning_team'].unique()), key="team_stats")
-            top_batters = deliveries[deliveries['inning_team']==team_filter].groupby('batter')['runs_scored'].sum().sort_values(ascending=False).head(10)
-            top_bowlers = deliveries[deliveries['inning_team']==team_filter].groupby('bowler')['is_wicket'].sum().sort_values(ascending=False).head(10)
+                except Exception as e:
+                    st.error(f"Prediction Error: {e}")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader(f"Top Batters - {team_filter}")
-                fig1 = px.bar(top_batters, x=top_batters.index, y=top_batters.values, labels={'x':'Batter','y':'Runs'}, text=top_batters.values)
-                st.plotly_chart(fig1, use_container_width=True)
-            with col2:
-                st.subheader(f"Top Bowlers - {team_filter}")
-                fig2 = px.bar(top_bowlers, x=top_bowlers.index, y=top_bowlers.values, labels={'x':'Bowler','y':'Wickets'}, text=top_bowlers.values)
-                st.plotly_chart(fig2, use_container_width=True)
+# ------------------ TAB 2: TOP PLAYERS ------------------
+with tab2:
+    st.header("Top Batters & Bowlers")
 
-    # ------------------ TAB 3: IPL Chatbot ------------------
-    with tab3:
-        st.header("🤖 Ask IPL Chatbot")
-        if "GEMINI_API_KEY" not in st.secrets:
-            st.error("Add GEMINI_API_KEY in Streamlit secrets to enable chatbot.")
-        else:
-            import google.generativeai as genai
-            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-            model_gemini = genai.GenerativeModel("gemini-1.5-flash")
+    if deliveries.empty:
+        st.error("Deliveries CSV not loaded.")
+    else:
+        # Top batters
+        top_batters = deliveries.groupby("batter")["runs_scored"].sum().sort_values(ascending=False).head(10).reset_index()
+        fig_bat = px.bar(top_batters, x="batter", y="runs_scored", title="Top 10 Run Scorers", text="runs_scored")
+        st.plotly_chart(fig_bat, use_container_width=True)
 
-            if "messages" not in st.session_state:
-                st.session_state.messages=[]
-            for msg in st.session_state.messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-            if user_input := st.chat_input("Ask anything IPL related"):
-                st.session_state.messages.append({"role":"user","content":user_input})
-                with st.chat_message("user"):
-                    st.markdown(user_input)
-                with st.spinner("AI is thinking..."):
-                    try:
-                        chat = model_gemini.start_chat()
-                        system_prompt = "You are an IPL expert analyst. Answer based on IPL history."
-                        response = chat.send_message(f"{system_prompt}\n\nQuestion: {user_input}")
-                        st.session_state.messages.append({"role":"assistant","content":response.text})
-                        with st.chat_message("assistant"):
-                            st.markdown(response.text)
-                    except Exception as e:
-                        st.error(f"Chatbot error: {e}")
+        # Top bowlers
+        top_bowlers = deliveries.groupby("bowler")["is_wicket"].sum().sort_values(ascending=False).head(10).reset_index()
+        fig_bowl = px.bar(top_bowlers, x="bowler", y="is_wicket", title="Top 10 Wicket Takers", text="is_wicket")
+        st.plotly_chart(fig_bowl, use_container_width=True)
+
+# ------------------ TAB 3: IPL CHATBOT ------------------
+with tab3:
+    st.header("🤖 IPL Chatbot")
+    st.info("Ask questions about IPL history, players, matches, etc.")
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if user_input := st.chat_input("Ask your question..."):
+        st.session_state.messages.append({"role":"user","content":user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        with st.spinner("AI is thinking..."):
+            # Since OpenAI/Gemini integration might vary, we can leave this for user key
+            st.info("Chatbot response would appear here if API is configured.")
