@@ -11,5 +11,6 @@ pygments
 google-generativeai
 openai
 plotly
+matplotlib
 
 
