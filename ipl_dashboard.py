@@ -112,7 +112,6 @@ with tab1:
                         'team2_win_pct': [team2_win_pct]
                     })
 
-                    # Ensure exact column order
                     input_data = input_data[['team1_enc','team2_enc','venue_enc','toss_enc',
                                              'toss_decision_enc','team1_form','team2_form',
                                              'team1_win_pct','team2_win_pct']]
@@ -138,6 +137,8 @@ with tab1:
                         st.write(f"{team1} Wins: {wins.get(team1,0)}")
                         st.write(f"{team2} Wins: {wins.get(team2,0)}")
                         st.bar_chart(wins)
+                except Exception as e:
+                    st.error(f"Prediction error: {e}")
 
 # --------------------- TAB 2: Chatbot ---------------------
 with tab2:
@@ -170,3 +171,4 @@ with tab2:
                         st.markdown(response.text)
                 except Exception as e:
                     st.error(f"Chatbot error: {e}")
+
