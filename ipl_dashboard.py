@@ -2,74 +2,109 @@ import streamlit as st
 import pandas as pd
 import joblib
 from predict_winner import predict_match_winner
+import openai  # Make sure openai is in requirements.txt
 
-# ------------------- Load models & encoders -------------------
-model = joblib.load("ipl_model.pkl")  # your trained XGBoost model
+# -----------------------------
+# Load trained model and encoders
+# -----------------------------
+model = joblib.load("ipl_model.pkl")
 team_encoder = joblib.load("team_encoder.pkl")
 venue_encoder = joblib.load("venue_encoder.pkl")
 toss_encoder = joblib.load("toss_encoder.pkl")
 winner_encoder = joblib.load("winner_encoder.pkl")
 
-# ------------------- Load match data -------------------
+# -----------------------------
+# Load match & delivery data for analysis
+# -----------------------------
 matches = pd.read_csv("all_matches.csv")
 deliveries = pd.read_csv("all_deliveries.csv")
 
-st.title("IPL Match Outcome Predictor")
-st.subheader("Advanced Match Analysis & Prediction")
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+st.set_page_config(page_title="IPL Match Predictor", layout="wide")
+st.title("Advanced IPL Match Predictor")
 
-# ------------------- Sidebar Inputs -------------------
-st.sidebar.header("Match Inputs")
-team1 = st.sidebar.selectbox("Select Team 1", matches['team1'].unique(), key="team1")
-team2 = st.sidebar.selectbox("Select Team 2", matches['team2'].unique(), key="team2")
-venue = st.sidebar.selectbox("Select Venue", matches['venue'].unique(), key="venue")
-toss_winner = st.sidebar.selectbox("Toss Winner", [team1, team2], key="toss")
-team1_form = st.sidebar.slider(f"{team1} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team1_form")
-team2_form = st.sidebar.slider(f"{team2} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team2_form")
+# Tabs
+tab1, tab2 = st.tabs(["Predictor", "AI Assistant"])
 
-# ------------------- Encode Inputs -------------------
-team1_enc = team_encoder.transform([team1])[0]
-team2_enc = team_encoder.transform([team2])[0]
-venue_enc = venue_encoder.transform([venue])[0]
-toss_enc = toss_encoder.transform([toss_winner])[0]
+# -----------------------------
+# Predictor Tab
+# -----------------------------
+with tab1:
+    st.header("Predict Match Winner")
 
-# ------------------- Compute Head-to-Head -------------------
-h2h_matches = matches[((matches['team1']==team1) & (matches['team2']==team2)) |
-                      ((matches['team1']==team2) & (matches['team2']==team1))]
+    team1 = st.selectbox("Select Team 1", sorted(team_encoder.classes_), key="team1")
+    team2 = st.selectbox("Select Team 2", sorted(team_encoder.classes_), key="team2")
+    venue = st.selectbox("Select Venue", sorted(venue_encoder.classes_), key="venue")
+    toss_winner = st.selectbox("Toss Winner", sorted(team_encoder.classes_), key="toss")
 
-team1_wins = len(h2h_matches[h2h_matches['winner']==team1])
-team2_wins = len(h2h_matches[h2h_matches['winner']==team2])
-total_h2h = team1_wins + team2_wins
+    team1_form = st.slider(f"{team1} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team1_form")
+    team2_form = st.slider(f"{team2} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team2_form")
 
-team1_win_pct = round(team1_wins/total_h2h,2) if total_h2h>0 else 0
-team2_win_pct = round(team2_wins/total_h2h,2) if total_h2h>0 else 0
+    # Head-to-head calculation
+    def get_win_percentage(team_a, team_b):
+        matches_between = matches[((matches['team1']==team_a) & (matches['team2']==team_b)) | 
+                                  ((matches['team1']==team_b) & (matches['team2']==team_a))]
+        if len(matches_between) == 0:
+            return 0.5, 0.5
+        team_a_wins = matches_between[matches_between['winner']==team_a].shape[0]
+        team_b_wins = matches_between[matches_between['winner']==team_b].shape[0]
+        total = team_a_wins + team_b_wins
+        if total == 0:
+            return 0.5, 0.5
+        return team_a_wins/total, team_b_wins/total
 
-# ------------------- Prediction -------------------
-if st.sidebar.button("Predict Winner"):
-    features = pd.DataFrame([[
-        team1_enc, team2_enc, venue_enc, toss_enc, team1_win_pct, team2_win_pct, team1_form, team2_form
-    ]], columns=[
-        'team1_enc', 'team2_enc', 'venue_enc', 'toss_enc', 
-        'team1_win_pct', 'team2_win_pct', 'team1_form', 'team2_form'
-    ])
-    
-    try:
-        pred_probs = model.predict_proba(features)[0]
-        winner_idx = pred_probs.argmax()
-        winner_name = [team1, team2][winner_idx]
-        st.success(f"Predicted Winner: {winner_name}")
-        st.info(f"{team1}: {round(pred_probs[0]*100,2)}% | {team2}: {round(pred_probs[1]*100,2)}%")
-    except Exception as e:
-        st.error(f"Error in prediction: {e}")
+    team1_win_pct, team2_win_pct = get_win_percentage(team1, team2)
 
-# ------------------- Head-to-Head Analysis -------------------
-st.subheader("Head-to-Head Analysis")
-st.write(f"Total Matches Played: {total_h2h}")
-st.write(f"{team1} Wins: {team1_wins}")
-st.write(f"{team2} Wins: {team2_wins}")
+    if st.button("Predict Winner"):
+        try:
+            pred, pred_probs = predict_match_winner(
+                model, team_encoder, venue_encoder, toss_encoder,
+                team1, team2, venue, toss_winner,
+                team1_win_pct, team2_win_pct, team1_form, team2_form
+            )
 
-# ------------------- Optional Chatbot Tab -------------------
-st.subheader("Ask About Teams / Matches")
-user_query = st.text_input("Enter your question here:", key="chat_input")
-if st.button("Get Answer", key="chat_button"):
-    # Placeholder chatbot response (can integrate AI later)
-    st.write(f"Answer to '{user_query}': Currently this feature is in development.")
+            st.subheader("Match Prediction")
+            st.write(f"**Predicted Winner:** {pred}")
+            st.write(f"**Winning Probability:** {pred_probs[pred]:.2%}")
+
+            # Head-to-head summary
+            st.subheader("Head-to-Head Analysis")
+            st.write(f"**{team1} win % vs {team2}:** {team1_win_pct:.2%}")
+            st.write(f"**{team2} win % vs {team1}:** {team2_win_pct:.2%}")
+            st.write(f"**Recent Form:** {team1}: {team1_form}, {team2}: {team2_form}")
+
+        except Exception as e:
+            st.error(f"Error in prediction: {e}")
+
+# -----------------------------
+# AI Assistant Tab
+# -----------------------------
+with tab2:
+    st.header("Ask IPL Questions or Predictions")
+    user_query = st.text_area("Type your question here:")
+
+    if st.button("Ask AI"):
+        if user_query.strip() == "":
+            st.warning("Please type a question first!")
+        else:
+            try:
+                # Make sure you set OPENAI_API_KEY in Streamlit Cloud secrets
+                openai.api_key = st.secrets["OPENAI_API_KEY"]
+
+                response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You are an expert IPL analyst."},
+                        {"role": "user", "content": user_query}
+                    ],
+                    temperature=0.7,
+                    max_tokens=300
+                )
+
+                answer = response.choices[0].message.content
+                st.write(answer)
+
+            except Exception as e:
+                st.error(f"Error fetching AI response: {e}")
