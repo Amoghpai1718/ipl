@@ -1,28 +1,26 @@
 import joblib
 import pandas as pd
 
-# Load model and encoder
-model = joblib.load("ipl_winner_model.pkl")
-encoder = joblib.load("team_encoder.pkl")
+# Load the trained model
+model = joblib.load("ipl_model.pkl")  # Use the correct file
 
-# Input data
-team1 = input("Enter Team 1 name: ")
-team2 = input("Enter Team 2 name: ")
-toss_winner = input("Enter Toss Winner: ")
-toss_decision = input("Enter Toss Decision (bat/field): ")
+def predict_match_winner(team1_enc, team2_enc, venue_enc, toss_enc, team1_form, team2_form):
+    """
+    Predicts the winner probability given encoded features and form values.
+    """
+    input_df = pd.DataFrame([{
+        "team1": team1_enc,
+        "team2": team2_enc,
+        "venue": venue_enc,
+        "toss_winner": toss_enc,
+        "team1_form": team1_form,
+        "team2_form": team2_form
+    }])
 
-# Encode inputs
-data = pd.DataFrame({
-    'team1': [team1],
-    'team2': [team2],
-    'toss_winner': [toss_winner],
-    'toss_decision': [toss_decision]
-})
+    # Align features exactly with training
+    expected_features = model.get_booster().feature_names
+    input_df = input_df[expected_features]
 
-for col in data.columns:
-    data[col] = encoder.transform(data[col])
-
-# Predict winner
-pred = model.predict(data)
-winner = encoder.inverse_transform(pred)
-print(f"Predicted Winner: {winner[0]}")
+    # Predict probabilities
+    pred_probs = model.predict_proba(input_df)[0]
+    return pred_probs
