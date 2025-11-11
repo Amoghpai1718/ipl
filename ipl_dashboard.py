@@ -171,4 +171,3 @@ with tab2:
                         st.markdown(response.text)
                 except Exception as e:
                     st.error(f"Chatbot error: {e}")
-
