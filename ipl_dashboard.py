@@ -78,33 +78,31 @@ with tab1:
         except Exception as e:
             st.error(f"Error in prediction: {e}")
 
-# -----------------------------
-# AI Assistant Tab
-# -----------------------------
-with tab2:
-    st.header("Ask IPL Questions or Predictions")
-    user_query = st.text_area("Type your question here:")
+ # ---------------- CHATBOT SECTION ----------------
+import os
+from googleapiclient.discovery import build
 
-    if st.button("Ask AI"):
-        if user_query.strip() == "":
-            st.warning("Please type a question first!")
-        else:
-            try:
-                # Make sure you set OPENAI_API_KEY in Streamlit Cloud secrets
-                openai.api_key = st.secrets["OPENAI_API_KEY"]
+def ask_chatbot(query):
+    """
+    Uses Google Custom Search API to get a response for the query.
+    """
+    service = build("customsearch", "v1", developerKey=os.getenv("GOOGLE_API_KEY"))
+    res = service.cse().list(
+        q=query,
+        cx=os.getenv("GOOGLE_SEARCH_CX"),
+        num=1,
+    ).execute()
 
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=[
-                        {"role": "system", "content": "You are an expert IPL analyst."},
-                        {"role": "user", "content": user_query}
-                    ],
-                    temperature=0.7,
-                    max_tokens=300
-                )
+    if "items" in res:
+        snippet = res['items'][0]['snippet']
+        return snippet
+    else:
+        return "No results found. Try another query."
 
-                answer = response.choices[0].message.content
-                st.write(answer)
-
-            except Exception as e:
-                st.error(f"Error fetching AI response: {e}")
+# Streamlit UI
+with st.expander("Powered Chatbot"):
+    user_query = st.text_input("Ask about IPL, Teams, Stats...")
+    if st.button("Send"):
+        if user_query:
+            response = ask_chatbot(user_query)
+            st.write(response)
