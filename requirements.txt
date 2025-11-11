@@ -10,4 +10,6 @@ mdurl
 pygments
 google-generativeai
 openai
+plotly
+
 
