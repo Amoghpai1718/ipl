@@ -1,108 +1,62 @@
 import streamlit as st
 import pandas as pd
-import joblib
 from predict_winner import predict_match_winner
-import openai  # Make sure openai is in requirements.txt
+from googleapiclient.discovery import build
 
-# -----------------------------
-# Load trained model and encoders
-# -----------------------------
-model = joblib.load("ipl_model.pkl")
-team_encoder = joblib.load("team_encoder.pkl")
-venue_encoder = joblib.load("venue_encoder.pkl")
-toss_encoder = joblib.load("toss_encoder.pkl")
-winner_encoder = joblib.load("winner_encoder.pkl")
+# ----------------- Streamlit UI -----------------
+st.set_page_config(page_title="IPL Match Predictor & Chatbot", layout="wide")
+st.title("IPL Match Predictor & Chatbot")
 
-# -----------------------------
-# Load match & delivery data for analysis
-# -----------------------------
-matches = pd.read_csv("all_matches.csv")
-deliveries = pd.read_csv("all_deliveries.csv")
+tab1, tab2 = st.tabs(["Predict Winner", "AI Chat"])
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.set_page_config(page_title="IPL Match Predictor", layout="wide")
-st.title("Advanced IPL Match Predictor")
-
-# Tabs
-tab1, tab2 = st.tabs(["Predictor", "AI Assistant"])
-
-# -----------------------------
-# Predictor Tab
-# -----------------------------
+# ----------------- Tab 1: Match Prediction -----------------
 with tab1:
     st.header("Predict Match Winner")
+    matches_df = pd.read_csv("all_matches.csv")
+    teams = sorted(matches_df['team1'].unique())
+    venues = sorted(matches_df['venue'].unique())
 
-    team1 = st.selectbox("Select Team 1", sorted(team_encoder.classes_), key="team1")
-    team2 = st.selectbox("Select Team 2", sorted(team_encoder.classes_), key="team2")
-    venue = st.selectbox("Select Venue", sorted(venue_encoder.classes_), key="venue")
-    toss_winner = st.selectbox("Toss Winner", sorted(team_encoder.classes_), key="toss")
-
-    team1_form = st.slider(f"{team1} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team1_form")
-    team2_form = st.slider(f"{team2} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="team2_form")
-
-    # Head-to-head calculation
-    def get_win_percentage(team_a, team_b):
-        matches_between = matches[((matches['team1']==team_a) & (matches['team2']==team_b)) | 
-                                  ((matches['team1']==team_b) & (matches['team2']==team_a))]
-        if len(matches_between) == 0:
-            return 0.5, 0.5
-        team_a_wins = matches_between[matches_between['winner']==team_a].shape[0]
-        team_b_wins = matches_between[matches_between['winner']==team_b].shape[0]
-        total = team_a_wins + team_b_wins
-        if total == 0:
-            return 0.5, 0.5
-        return team_a_wins/total, team_b_wins/total
-
-    team1_win_pct, team2_win_pct = get_win_percentage(team1, team2)
+    team1 = st.selectbox("Select Team 1", teams, key="team1")
+    team2 = st.selectbox("Select Team 2", [t for t in teams if t != team1], key="team2")
+    venue = st.selectbox("Select Venue", venues)
+    toss_winner = st.selectbox("Toss Winner", [team1, team2])
+    
+    # Recent form sliders
+    team1_form = st.slider(f"{team1} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="form1")
+    team2_form = st.slider(f"{team2} Recent Form (0-1)", 0.0, 1.0, 0.5, 0.01, key="form2")
 
     if st.button("Predict Winner"):
         try:
-            pred, pred_probs = predict_match_winner(
-                model, team_encoder, venue_encoder, toss_encoder,
-                team1, team2, venue, toss_winner,
-                team1_win_pct, team2_win_pct, team1_form, team2_form
+            predicted_team, prob1, prob2, h2h_stats = predict_match_winner(
+                team1, team2, venue, toss_winner, team1_form, team2_form
             )
-
-            st.subheader("Match Prediction")
-            st.write(f"**Predicted Winner:** {pred}")
-            st.write(f"**Winning Probability:** {pred_probs[pred]:.2%}")
-
-            # Head-to-head summary
-            st.subheader("Head-to-Head Analysis")
-            st.write(f"**{team1} win % vs {team2}:** {team1_win_pct:.2%}")
-            st.write(f"**{team2} win % vs {team1}:** {team2_win_pct:.2%}")
-            st.write(f"**Recent Form:** {team1}: {team1_form}, {team2}: {team2_form}")
-
+            st.subheader(f"Predicted Winner: {predicted_team}")
+            st.write(f"{team1}: {prob1*100:.2f}% chance")
+            st.write(f"{team2}: {prob2*100:.2f}% chance")
+            st.write("### Head-to-Head Stats")
+            st.write(h2h_stats)
         except Exception as e:
             st.error(f"Error in prediction: {e}")
 
- # ---------------- CHATBOT SECTION ----------------
-import os
-from googleapiclient.discovery import build
+# ----------------- Tab 2: Google Chatbot -----------------
+with tab2:
+    st.header("Ask IPL Chatbot")
+    query = st.text_input("Ask anything about IPL:")
 
-def ask_chatbot(query):
-    """
-    Uses Google Custom Search API to get a response for the query.
-    """
-    service = build("customsearch", "v1", developerKey=os.getenv("GOOGLE_API_KEY"))
-    res = service.cse().list(
-        q=query,
-        cx=os.getenv("GOOGLE_SEARCH_CX"),
-        num=1,
-    ).execute()
+    GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY")
+    GOOGLE_SEARCH_CX = st.secrets.get("GOOGLE_SEARCH_CX")
+    GOOGLE_SEARCH_KEY = st.secrets.get("GOOGLE_SEARCH_KEY")
 
-    if "items" in res:
-        snippet = res['items'][0]['snippet']
-        return snippet
-    else:
-        return "No results found. Try another query."
-
-# Streamlit UI
-with st.expander("Powered Chatbot"):
-    user_query = st.text_input("Ask about IPL, Teams, Stats...")
-    if st.button("Send"):
-        if user_query:
-            response = ask_chatbot(user_query)
-            st.write(response)
+    if st.button("Ask") and query:
+        try:
+            service = build("customsearch", "v1", developerKey=GOOGLE_API_KEY)
+            res = service.cse().list(q=query, cx=GOOGLE_SEARCH_CX, num=3).execute()
+            results = res.get('items', [])
+            if results:
+                for i, r in enumerate(results, 1):
+                    st.markdown(f"**Result {i}:** [{r['title']}]({r['link']})")
+                    st.write(r.get('snippet', ''))
+            else:
+                st.write("No results found.")
+        except Exception as e:
+            st.error(f"Chatbot Error: {e}")
