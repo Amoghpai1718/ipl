@@ -1,171 +1,196 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import joblib
 import plotly.graph_objects as go
-import requests
-from predict_winner import predict_match_winner
+from googleapiclient.discovery import build
+import google.generativeai as genai
+import os
 
-st.set_page_config(page_title="IPL Match Predictor & Deep Dive Dashboard", layout="wide")
+st.set_page_config(page_title="IPL Match Predictor & AI Dashboard", layout="wide")
 
+# ----------------------- CONFIG & STYLING -----------------------
 st.markdown("""
     <style>
-    body {background-color: #0E1117; color: white;}
-    .stButton>button {background-color: #FF6F00; color: white; border-radius: 8px;}
+        body { background-color: #0e1117; color: white; }
+        .stApp { background-color: #0e1117; }
+        h1, h2, h3, h4 { color: #00FFFF; }
     </style>
 """, unsafe_allow_html=True)
 
-# -------------------------
-# Load model & encoders
-# -------------------------
-@st.cache_resource
-def load_model():
-    try:
-        model = joblib.load("ipl_model.pkl")
-        team_encoder = joblib.load("team_encoder.pkl")
-        toss_encoder = joblib.load("toss_encoder.pkl")
-        venue_encoder = joblib.load("venue_encoder.pkl")
-        winner_encoder = joblib.load("winner_encoder.pkl")
-        return model, team_encoder, toss_encoder, venue_encoder, winner_encoder
-    except Exception as e:
-        st.error(f"Error loading model/encoders: {e}")
-        return None, None, None, None, None
-
-model, team_encoder, toss_encoder, venue_encoder, winner_encoder = load_model()
-
-# -------------------------
-# Load data
-# -------------------------
+# ----------------------- CACHING -----------------------
 @st.cache_data
 def load_data():
     matches = pd.read_csv("all_matches.csv")
     deliveries = pd.read_csv("all_deliveries.csv")
     return matches, deliveries
 
-matches, deliveries = load_data()
+@st.cache_resource
+def load_model_and_encoders():
+    try:
+        model = joblib.load("ipl_model.pkl")
+        team_encoder = joblib.load("team_encoder.pkl")
+        venue_encoder = joblib.load("venue_encoder.pkl")
+        toss_encoder = joblib.load("toss_encoder.pkl")
+        return model, team_encoder, venue_encoder, toss_encoder
+    except Exception as e:
+        st.error(f"Error loading model or encoders: {e}")
+        return None, None, None, None
 
-if model is None:
+# ----------------------- LOAD -----------------------
+matches, deliveries = load_data()
+model, team_encoder, venue_encoder, toss_encoder = load_model_and_encoders()
+
+if matches is None or deliveries is None or model is None:
     st.stop()
 
-st.title("🏏 IPL Match Predictor & Deep Dive Dashboard")
+# ----------------------- PREDICTION FUNCTION -----------------------
+def predict_match_winner(model, team_encoder, venue_encoder, toss_encoder,
+                         team1, team2, venue, toss_winner,
+                         team1_form, team2_form, team1_win_pct, team2_win_pct):
+    try:
+        team1_enc = team_encoder.transform([team1])[0]
+        team2_enc = team_encoder.transform([team2])[0]
+        venue_enc = venue_encoder.transform([venue])[0]
+        toss_enc = toss_encoder.transform([toss_winner])[0]
 
-tab1, tab2 = st.tabs(["📊 Prediction & Insights", "💬 IPL Chatbot"])
+        input_df = pd.DataFrame({
+            "team1_enc": [team1_enc],
+            "team2_enc": [team2_enc],
+            "venue_enc": [venue_enc],
+            "toss_enc": [toss_enc],
+            "team1_form": [team1_form],
+            "team2_form": [team2_form],
+            "team1_win_pct": [team1_win_pct],
+            "team2_win_pct": [team2_win_pct]
+        })
 
-# ======================================================
-# TAB 1: Prediction and Deep Dive
-# ======================================================
-with tab1:
-    all_teams = sorted(team_encoder.classes_)
-    all_venues = sorted(venue_encoder.classes_)
+        pred = model.predict(input_df)[0]
+        proba = model.predict_proba(input_df)[0]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        team1 = st.selectbox("Select Team 1", all_teams, index=0)
-        team2 = st.selectbox("Select Team 2", all_teams, index=1)
-    with col2:
-        venue = st.selectbox("Select Venue", all_venues)
-        toss_winner = st.selectbox("Toss Winner", [team1, team2])
+        winner = team1 if pred == 1 else team2
+        win_probs = {team1: proba[1]*100, team2: proba[0]*100}
+        return winner, win_probs
+    except Exception as e:
+        st.error(f"Error in prediction: {e}")
+        return None, None
 
-    st.subheader("Team Form & Win %")
-    col3, col4 = st.columns(2)
-    with col3:
-        team1_form = st.slider(f"{team1} Recent Form (0–10)", 0.0, 10.0, 5.0)
-        team1_win_pct = st.slider(f"{team1} Overall Win %", 0.0, 100.0, 50.0)
-    with col4:
-        team2_form = st.slider(f"{team2} Recent Form (0–10)", 0.0, 10.0, 5.0)
-        team2_win_pct = st.slider(f"{team2} Overall Win %", 0.0, 100.0, 50.0)
+# ----------------------- STATS FUNCTIONS -----------------------
+def team_vs_team_stats(matches, team1, team2):
+    h2h = matches[((matches['team1'] == team1) & (matches['team2'] == team2)) |
+                  ((matches['team1'] == team2) & (matches['team2'] == team1))]
+    t1_wins = (h2h['winner'] == team1).sum()
+    t2_wins = (h2h['winner'] == team2).sum()
+    return len(h2h), t1_wins, t2_wins
 
-    if st.button("Predict Winner"):
-        try:
-            winner, win_probs = predict_match_winner(
-                model, team_encoder, venue_encoder, toss_encoder,
-                team1, team2, venue, toss_winner,
-                team1_form, team2_form, team1_win_pct, team2_win_pct
-            )
+def avg_score_and_wickets(deliveries, matches, team, venue):
+    merged = deliveries.merge(matches[['match_id', 'venue']], on='match_id', how='left')
+    data = merged[(merged['venue'] == venue) & (merged['inning_team'] == team)]
+    if data.empty:
+        return 0, 0
+    avg_score = data.groupby('match_id')['runs_scored'].sum().mean()
+    avg_wickets = data.groupby('match_id')['is_wicket'].sum().mean()
+    return round(avg_score, 1), round(avg_wickets, 1)
 
-            st.subheader(f"🏆 Predicted Winner: {winner}")
+def top_players_against_team(deliveries, matches, team1, team2):
+    merged = deliveries.merge(matches[['match_id', 'team1', 'team2']], on='match_id', how='left')
+    mask = ((merged['inning_team'] == team1) & (merged['team2'] == team2)) | \
+           ((merged['inning_team'] == team2) & (merged['team1'] == team1))
+    data = merged[mask]
+    if data.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    top_batters = data.groupby('batter')['runs_scored'].sum().nlargest(5).reset_index()
+    top_bowlers = data.groupby('bowler')['is_wicket'].sum().nlargest(5).reset_index()
+    return top_batters, top_bowlers
 
-            # Animated Pie Chart (Plotly)
-            fig = go.Figure(data=[
-                go.Pie(
-                    labels=[team1, team2],
-                    values=[win_probs[team1], win_probs[team2]],
-                    hole=0.3,
-                    marker_colors=["#FF6F00", "#1E90FF"]
-                )
-            ])
-            fig.update_traces(textinfo='label+percent')
-            st.plotly_chart(fig, use_container_width=True)
+# ----------------------- CHATBOT -----------------------
+def chatbot_response(query):
+    try:
+        GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+        GOOGLE_SEARCH_KEY = st.secrets["GOOGLE_SEARCH_KEY"]
+        GOOGLE_SEARCH_CX = st.secrets["GOOGLE_SEARCH_CX"]
 
-            # Head-to-Head
-            h2h = matches[
-                ((matches["team1"] == team1) & (matches["team2"] == team2)) |
-                ((matches["team1"] == team2) & (matches["team2"] == team1))
-            ]
-            st.subheader("📈 Head-to-Head Statistics")
-            st.write(f"Total Matches Played: {len(h2h)}")
-            st.write(f"{team1} Wins: {(h2h['winner'] == team1).sum()}")
-            st.write(f"{team2} Wins: {(h2h['winner'] == team2).sum()}")
+        genai.configure(api_key=GOOGLE_API_KEY)
+        service = build("customsearch", "v1", developerKey=GOOGLE_SEARCH_KEY)
+        response = service.cse().list(q=query, cx=GOOGLE_SEARCH_CX, num=5).execute()
+        items = response.get("items", [])
+        snippets = "\n".join([f"{i['title']}: {i['snippet']}" for i in items])
 
-            # Venue averages
-            venue_matches = matches[matches["venue"] == venue]
-            team1_ids = venue_matches[
-                (venue_matches["team1"] == team1) | (venue_matches["team2"] == team1)
-            ]["match_id"]
-            team2_ids = venue_matches[
-                (venue_matches["team1"] == team2) | (venue_matches["team2"] == team2)
-            ]["match_id"]
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = f"Based on the following web results, answer the IPL-related query clearly:\n{snippets}\n\nQuery: {query}"
+        result = model.generate_content(prompt)
+        return result.text.strip() if result else "No relevant answer found."
+    except Exception as e:
+        return f"Error in chatbot: {e}"
 
-            team1_batting = deliveries[(deliveries["inning_team"] == team1) & (deliveries["match_id"].isin(team1_ids))]
-            team2_batting = deliveries[(deliveries["inning_team"] == team2) & (deliveries["match_id"].isin(team2_ids))]
+# ----------------------- DASHBOARD -----------------------
+st.title("🏏 IPL Match Predictor & AI Deep Dive Dashboard")
 
-            avg_runs_team1 = team1_batting.groupby("match_id")["runs_scored"].sum().mean()
-            avg_runs_team2 = team2_batting.groupby("match_id")["runs_scored"].sum().mean()
-            avg_wickets_team1 = team1_batting.groupby("match_id")["is_wicket"].sum().mean()
-            avg_wickets_team2 = team2_batting.groupby("match_id")["is_wicket"].sum().mean()
+col1, col2, col3 = st.columns(3)
+with col1:
+    team1 = st.selectbox("Select Team 1", sorted(matches['team1'].unique()))
+    team1_form = st.slider(f"{team1} Recent Form (0–10)", 0, 10, 5)
+    team1_win_pct = st.slider(f"{team1} Overall Win %", 0, 100, 50)
 
-            st.subheader(f"🏟️ Venue Averages at {venue}")
-            st.write(f"{team1} - Avg Runs: {avg_runs_team1:.1f}, Avg Wickets Lost: {avg_wickets_team1:.1f}")
-            st.write(f"{team2} - Avg Runs: {avg_runs_team2:.1f}, Avg Wickets Lost: {avg_wickets_team2:.1f}")
+with col2:
+    team2 = st.selectbox("Select Team 2", sorted(matches['team2'].unique()))
+    team2_form = st.slider(f"{team2} Recent Form (0–10)", 0, 10, 5)
+    team2_win_pct = st.slider(f"{team2} Overall Win %", 0, 100, 50)
 
-            # Top Batters and Bowlers
-            st.subheader("🔥 Top Performers (vs Opponent)")
-            vs_data = deliveries[
-                (deliveries["inning_team"].isin([team1, team2])) &
-                (deliveries["match_id"].isin(h2h["match_id"]))
-            ]
-            top_batters = vs_data.groupby("batter")["runs_scored"].sum().sort_values(ascending=False).head(5)
-            top_bowlers = vs_data.groupby("bowler")["is_wicket"].sum().sort_values(ascending=False).head(5)
+with col3:
+    venue = st.selectbox("Select Venue", sorted(matches['venue'].unique()))
+    toss_winner = st.selectbox("Toss Winner", [team1, team2])
 
-            col5, col6 = st.columns(2)
-            with col5:
-                st.bar_chart(top_batters)
-            with col6:
-                st.bar_chart(top_bowlers)
+if st.button("Predict Winner"):
+    winner, win_probs = predict_match_winner(model, team_encoder, venue_encoder, toss_encoder,
+                                             team1, team2, venue, toss_winner,
+                                             team1_form, team2_form, team1_win_pct, team2_win_pct)
+    if winner:
+        st.subheader(f"🏆 Predicted Winner: **{winner}**")
 
-        except Exception as e:
-            st.error(f"Error in prediction: {e}")
+        # Animated pie chart using Plotly
+        fig = go.Figure(data=[go.Pie(labels=list(win_probs.keys()),
+                                     values=list(win_probs.values()),
+                                     hole=0.4)])
+        fig.update_traces(textinfo='label+percent', pull=[0.05, 0])
+        fig.update_layout(title_text="Win Probability", template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
 
-# ======================================================
-# TAB 2: Simple AI Chatbot
-# ======================================================
-with tab2:
-    st.subheader("💬 Ask the IPL Chatbot")
+# ----------------------- H2H + TEAM STATS -----------------------
+st.markdown("---")
+st.header("📊 Head-to-Head Statistics & Venue Insights")
 
-    GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY")
-    GOOGLE_CX = st.secrets.get("GOOGLE_SEARCH_CX")
+matches_played, t1_wins, t2_wins = team_vs_team_stats(matches, team1, team2)
+t1_avg_score, t1_avg_wkts = avg_score_and_wickets(deliveries, matches, team1, venue)
+t2_avg_score, t2_avg_wkts = avg_score_and_wickets(deliveries, matches, team2, venue)
 
-    if not GOOGLE_API_KEY or not GOOGLE_CX:
-        st.warning("Chatbot disabled. Add GOOGLE_API_KEY and GOOGLE_SEARCH_CX in Streamlit Secrets.")
-    else:
-        user_query = st.text_input("Ask anything about IPL...")
-        if st.button("Ask"):
-            try:
-                url = f"https://www.googleapis.com/customsearch/v1?q={user_query}&cx={GOOGLE_CX}&key={GOOGLE_API_KEY}"
-                resp = requests.get(url).json()
-                if "items" in resp:
-                    for item in resp["items"][:3]:
-                        st.write(f"**{item['title']}** - {item['snippet']}")
-                else:
-                    st.write("No relevant results found.")
-            except Exception as e:
-                st.error(f"Chatbot error: {e}")
+colA, colB, colC = st.columns(3)
+colA.metric("Matches Played", matches_played)
+colB.metric(f"{team1} Wins", t1_wins)
+colC.metric(f"{team2} Wins", t2_wins)
+
+st.subheader(f"Team Averages at {venue}")
+st.write(f"**{team1}:** Avg Score = {t1_avg_score}, Avg Wickets Lost = {t1_avg_wkts}")
+st.write(f"**{team2}:** Avg Score = {t2_avg_score}, Avg Wickets Lost = {t2_avg_wkts}")
+
+# ----------------------- PLAYER STATS -----------------------
+st.markdown("---")
+st.header("🔥 Top Players in Head-to-Head Battles")
+
+top_batters, top_bowlers = top_players_against_team(deliveries, matches, team1, team2)
+if not top_batters.empty:
+    st.subheader("Top Batters")
+    st.bar_chart(top_batters.set_index("batter"))
+if not top_bowlers.empty:
+    st.subheader("Top Bowlers")
+    st.bar_chart(top_bowlers.set_index("bowler"))
+
+# ----------------------- CHATBOT -----------------------
+st.markdown("---")
+st.header("🤖 AI Chatbot: Ask about IPL or Teams")
+
+user_query = st.text_input("Type your IPL-related question:")
+if user_query:
+    with st.spinner("Fetching AI insights..."):
+        response = chatbot_response(user_query)
+    st.write(response)
